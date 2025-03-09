@@ -50,7 +50,7 @@ def get_user(userId: int = 0, username: str = ""):
     if userId != 0:
         query = Query(f"@userId:[{userId} {userId}]")
     elif username != "":
-        query = Query(f"@username:{username}*")
+        query = Query(f"@username: *{username}*")
     else:
         raise HTTPException(detail=f"User not found, no query parameters given.", status_code=status.HTTP_404_NOT_FOUND)
 
@@ -85,29 +85,24 @@ def get_all_events():
     return event_list
 
 @app.get("/event", response_model=EventDb)
-def get_event(eventId: int = 0, title: str = "", eventDateTime: str = ""):
+def get_event(eventId: int = 0, title: str = "", eventDatetime: str = ""):
     
-    # Define query based on parameter
-    if eventId != 0:
-        query = Query(f"@eventId:[{eventId} {eventId}]")
-    elif title != "":
-        query = Query(f"@title: *{title}*")
-    elif eventDateTime != "":
-        query = Query(f"@eventDateTime:{eventDateTime}*")
-    else:
-        raise HTTPException(detail=f"Event not found, no query parameters given.", status_code=status.HTTP_404_NOT_FOUND)
-    
-    # Run search
-    event = eventIndex.search(query)
+    event = utils.fetch_event(eventId, title, eventDatetime)
 
     # Process result
-    if event and event.docs:
-        return json.loads(event.docs[0].json)
-    else:
+    if event is None:
         raise HTTPException(detail=f"No event found.", status_code=status.HTTP_404_NOT_FOUND)
+    return event
+        
 
-@app.post("/events", status_code=status.HTTP_201_CREATED)
-def new_event(title: str, eventDateTime: str, duration: float, description: str, groups: list[Group]):
+@app.post("/event", status_code=status.HTTP_201_CREATED)
+def new_event(
+    title: str, 
+    eventDatetime: str, 
+    duration: float, 
+    description: str, 
+    groups: list[Group]
+):
     # Increase ID counter
     eventId = db.incr("eventCounter")
     
@@ -115,7 +110,7 @@ def new_event(title: str, eventDateTime: str, duration: float, description: str,
     groups_db = utils.ConvertToDbFormat(groups)
 
     # Compose JSON
-    event = {"eventId": eventId, "title": title, "eventDatetime": eventDateTime, "duration": duration, "description": description, "groups": groups_db}
+    event = {"eventId": eventId, "title": title, "eventDatetime": eventDatetime, "duration": duration, "description": description, "groups": groups_db}
     
     # Set JSON
     db.json().set(f"event:{eventId}", "$", event)
@@ -124,7 +119,44 @@ def new_event(title: str, eventDateTime: str, duration: float, description: str,
     db.bgsave()
     return event
 
-@app.delete("/events", status_code=status.HTTP_204_NO_CONTENT)
+
+@app.patch("/event", status_code=status.HTTP_200_OK)
+def update_event(
+    eventId: int, 
+    title: str = "", 
+    eventDatetime: str = "", 
+    duration: float = -1, 
+    description: str = "", 
+    groups: list[Group] = []
+):
+    
+    # Get unmodified event
+    currentEvent = utils.fetch_event(eventId=eventId)
+
+    # If the unmodified event doesn't exist, return 404
+    if not currentEvent:
+        raise HTTPException(detail=f"Event does not exist.", status_code=status.HTTP_404_NOT_FOUND)
+
+    # Get values depending on whether they were altered or not
+    tempTitle = title if title != "" else currentEvent["title"]
+    tempEventDateTime = eventDatetime if eventDatetime != "" else currentEvent["eventDatetime"]
+    tempDuration = duration if duration != -1 else currentEvent["duration"]
+    tempDescription = description if description != "" else currentEvent["description"]
+    if groups != []:
+        tempGroups = utils.ConvertToDbFormat(groups)
+    else:
+        tempGroups = currentEvent["groups"]
+
+    # Combine to dictionary
+    updatedEvent = {"eventId": eventId, "title": tempTitle, "eventDatetime": tempEventDateTime, "duration": tempDuration, "description": tempDescription, "groups": tempGroups}
+
+    # Save modified event
+    db.json().set(f"event:{eventId}", "$", updatedEvent)
+
+    return updatedEvent
+
+
+@app.delete("/event", status_code=status.HTTP_204_NO_CONTENT)
 def delete_event(eventId: int):
     reply = db.delete(f"event:{eventId}")
     if reply == 1:
