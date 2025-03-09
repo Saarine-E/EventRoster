@@ -8,6 +8,7 @@ from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from redis.exceptions import ResponseError
 import json
+import operator
 
 app = FastAPI()
 db = redis.Redis(decode_responses=True)
@@ -82,6 +83,7 @@ def delete_user(eventId: int):
 def get_all_events():
     events = eventIndex.search(Query("*")).docs
     event_list = [json.loads(event.json) for event in events]
+    event_list.sort(key=operator.itemgetter('eventDatetime'))
     return event_list
 
 @app.get("/event", response_model=EventDb)
