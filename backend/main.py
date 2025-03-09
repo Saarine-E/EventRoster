@@ -9,9 +9,21 @@ from redis.commands.search.query import Query
 from redis.exceptions import ResponseError
 import json
 import operator
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI()
 db = redis.Redis(decode_responses=True)
+
+
+# CORS Origin Allow
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins="http://localhost:5173",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Search Indices
 ### Index for searching users using userIds or usernames
