@@ -1,4 +1,4 @@
-from models import Group, GroupDb, SlotDb
+from ..db.models import Group, GroupDb, SlotDb
 from redis.commands.search.query import Query
 import redis
 import json
