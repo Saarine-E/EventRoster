@@ -1,106 +1,73 @@
-from fastapi import FastAPI, status, HTTPException, APIRouter
-from ..db.models import Group,EventDb
-from ..db import utils
-import redis
-from redis.commands.search.field import NumericField, TextField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
-from redis.commands.search.query import Query
-from redis.exceptions import ResponseError
-import json
-import operator
-
-db = redis.Redis(decode_responses=True)
-
-### Index for searching users using userIds or usernames
-try:
-    eventIndex = db.ft("event_index")
-    eventIndex.info()
-except ResponseError:
-    eventIndex.create_index([
-        NumericField("$.eventId", as_name="eventId"),
-        TextField("$.title", as_name="title"),
-        TextField("$.eventDatetime", as_name="eventDatetime")
-    ], definition=IndexDefinition(prefix=["event:"], index_type=IndexType.JSON))
+from fastapi import status, HTTPException
+from ..db.models import Group,EventDb, TextInput
+from sqlmodel import Session, select
 
 
-def get_all_events():
-    events = eventIndex.search(Query("*")).docs
-    event_list = [json.loads(event.json) for event in events]
-    event_list.sort(key=operator.itemgetter('eventDatetime'))
-    return event_list
+def get_events(session: Session, eventId: int = 0, title: str = "", eventDatetime: str = ""):
+    # Define query based on parameters
+    query = select(EventDb)
+    if eventId != 0:
+        query = query.where(EventDb.eventId == eventId)
+    if title != "":
+        query = query.where(EventDb.title.collate("NOCASE").like(f"%{title}%"))
 
-def get_event(eventId: int = 0, title: str = "", eventDatetime: str = ""):
-    
-    event = utils.fetch_event(eventId, title, eventDatetime)
+    # Execute search
+    events = session.exec(query).all()
 
     # Process result
-    if event is None:
+    if events:
+        return [event.model_dump() for event in events]
+    else:
         raise HTTPException(detail=f"No event found.", status_code=status.HTTP_404_NOT_FOUND)
-    return event
         
 
 def new_event(
+    session: Session,
     title: str, 
     eventDatetime: str, 
     duration: float, 
-    description: str, 
+    description: TextInput, 
     groups: list[Group]
 ):
-    # Increase ID counter
-    eventId = db.incr("eventCounter")
+    event = EventDb(title=title, eventDatetime=eventDatetime, duration=duration, description=description, groups=groups)
     
-    # Convert list[Group] to list[GroupDb]
-    groups_db = utils.ConvertToDbFormat(groups)
-
-    # Compose JSON
-    event = {"eventId": eventId, "title": title, "eventDatetime": eventDatetime, "duration": duration, "description": description, "groups": groups_db}
-    
-    # Set JSON
-    db.json().set(f"event:{eventId}", "$", event)
-    
-    # Trigger async save to disk, to avoid overriding id numbers should redis crash before saving
-    db.bgsave()
+    session.add(event)
+    session.commit()
+    session.refresh(event)
     return event
 
 
 def update_event(
+    session: Session,
     eventId: int, 
     title: str = "", 
     eventDatetime: str = "", 
     duration: float = -1, 
-    description: str = "", 
+    description: TextInput = {""}, 
     groups: list[Group] = []
 ):
-    
-    # Get unmodified event
-    currentEvent = utils.fetch_event(eventId=eventId)
+    event = session.exec(select(EventDb).filter_by(eventId=eventId)).first()
 
-    # If the unmodified event doesn't exist, return 404
-    if not currentEvent:
-        raise HTTPException(detail=f"Event does not exist.", status_code=status.HTTP_404_NOT_FOUND)
-
-    # Get values depending on whether they were altered or not
-    tempTitle = title if title != "" else currentEvent["title"]
-    tempEventDateTime = eventDatetime if eventDatetime != "" else currentEvent["eventDatetime"]
-    tempDuration = duration if duration != -1 else currentEvent["duration"]
-    tempDescription = description if description != "" else currentEvent["description"]
+    if title != "":
+        event.title = title
+    if eventDatetime != "":
+        event.eventDatetime = eventDatetime
+    if duration != -1:
+        event.duration = duration
+    if description != "":
+        event.description = description
     if groups != []:
-        tempGroups = utils.ConvertToDbFormat(groups)
-    else:
-        tempGroups = currentEvent["groups"]
-
-    # Combine to dictionary
-    updatedEvent = {"eventId": eventId, "title": tempTitle, "eventDatetime": tempEventDateTime, "duration": tempDuration, "description": tempDescription, "groups": tempGroups}
-
-    # Save modified event
-    db.json().set(f"event:{eventId}", "$", updatedEvent)
-
-    return updatedEvent
+        event.groups = groups
+    
+    session.commit()
+    session.refresh(event)
+    return event
 
 
-def delete_event(eventId: int):
-    reply = db.delete(f"event:{eventId}")
-    if reply == 1:
-        return
-    else:
+def delete_event(session: Session, eventId: int):
+    event = session.get(EventDb, eventId)
+    if not event:
         raise HTTPException(detail=f"Event does not exist.", status_code=status.HTTP_404_NOT_FOUND)
+    session.delete(event)
+    session.commit()
+    return {"message": f"Event {eventId} deleted"}
